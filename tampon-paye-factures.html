@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Tampon Payé PDF</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<style>
+:root {
+  --accent: #D85A30;
+  --bg: #f4f4f6;
+  --panel: #ffffff;
+  --border: #ddd;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  height: 100vh; height: 100dvh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+header {
+  background: var(--accent); color: #fff;
+  padding: 10px 16px; font-weight: 700; font-size: 17px;
+  flex-shrink: 0;
+}
+#layout { flex: 1; display: flex; min-height: 0; }
+#panel {
+  width: 270px; flex-shrink: 0; background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto; padding: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+#preview-zone {
+  flex: 1; position: relative; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: #888;
+}
+#drop-hint { color: #eee; font-size: 15px; text-align: center; padding: 20px; }
+#pdf-canvas { display: block; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.4); }
+#canvas-wrap { position: relative; }
+#stamp {
+  position: absolute; cursor: grab; touch-action: none;
+  user-select: none; -webkit-user-select: none;
+}
+#stamp:active { cursor: grabbing; }
+label { font-size: 12px; font-weight: 600; color: #555; display: block; margin-bottom: 3px; }
+input, select, button {
+  width: 100%; padding: 8px; font-size: 14px;
+  border: 1px solid var(--border); border-radius: 6px; background: #fff;
+}
+button { cursor: pointer; }
+button.primary {
+  background: var(--accent); color: #fff; border: none; font-weight: 700;
+}
+button.primary:disabled { background: #ccc; cursor: default; }
+.row { display: flex; gap: 6px; }
+.row > * { flex: 1; }
+.tpl-item {
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 13px; cursor: pointer; background: #fafafa;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.tpl-item:hover { border-color: var(--accent); }
+.tpl-del { color: #b00; cursor: pointer; padding: 0 4px; font-weight: 700; }
+#file-list { display: flex; flex-direction: column; gap: 4px; }
+.file-item {
+  padding: 6px 8px; font-size: 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border); background: #fafafa;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-item.active { border-color: var(--accent); background: #fdf0ea; font-weight: 600; }
+hr { border: none; border-top: 1px solid var(--border); }
+#rot-val { font-size: 12px; color: #555; text-align: right; }
+/* Mobile : panneau en bas */
+@media (max-width: 700px) {
+  #layout { flex-direction: column-reverse; }
+  #panel {
+    width: 100%; max-height: 45%; border-right: none;
+    border-top: 1px solid var(--border);
+  }
+}
+</style>
+</head>
+<body>
+<header>🖃 Tampon Payé PDF</header>
+<div id="layout">
+  <div id="panel">
+    <button class="primary" onclick="document.getElementById('file-input').click()">📂 Ouvrir PDF(s)</button>
+    <input type="file" id="file-input" accept="application/pdf" multiple hidden>
+
+    <div id="file-list"></div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:400;cursor:pointer">
+      <input type="checkbox" id="inp-shared" checked style="width:auto">
+      Même tampon pour tous les PDFs
+    </label>
+    <hr>
+    <label>Templates</label>
+    <div id="tpl-list"></div>
+    <button onclick="addTemplate()">＋ Nouveau template</button>
+    <hr>
+    <label>Date de paiement</label>
+    <input type="date" id="inp-date">
+    <label>Compte / moyen de paiement</label>
+    <input type="text" id="inp-account" placeholder="ex : Compte 0860, CB, Virement">
+    <label>Couleur</label>
+    <select id="inp-color">
+      <option value="#D85A30" selected>Rouge-orangé</option>
+      <option value="#2765C1">Bleu</option>
+      <option value="#1E9052">Vert</option>
+      <option value="#B21818">Rouge foncé</option>
+      <option value="#752DA9">Violet</option>
+    </select>
+    <label>Rotation <span id="rot-val">-8°</span></label>
+    <input type="range" id="inp-rot" min="-30" max="30" value="-8">
+    <hr>
+    <button class="primary" id="btn-save" disabled onclick="saveCurrent()">💾 Enregistrer ce PDF</button>
+    <button class="primary" id="btn-save-all" disabled onclick="saveAll()">💾 Enregistrer tous les PDFs</button>
+  </div>
+
+  <div id="preview-zone">
+    <div id="drop-hint">Glissez des PDF ici<br>ou utilisez le bouton Ouvrir</div>
+    <div id="canvas-wrap" style="display:none">
+      <canvas id="pdf-canvas"></canvas>
+      <canvas id="stamp"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+// ── Constantes tampon (points PDF) — identiques à l'appli desktop ─────────────
+const STAMP_W = 190, PAD_V = 12, GAP = 5, FS_TITLE = 22, FS_LINE = 13;
+
+// ── État ──────────────────────────────────────────────────────────────────────
+let files = [];          // { name, bytes, stamp: {date, account, color, rot, x, y} }
+let currentIdx = -1;
+
+function isShared() { return document.getElementById("inp-shared").checked; }
+function getUI() {
+  return {
+    date:    document.getElementById("inp-date").value,
+    account: document.getElementById("inp-account").value,
+    color:   document.getElementById("inp-color").value,
+    rot:    +document.getElementById("inp-rot").value,
+    x: stampX, y: stampY,
+  };
+}
+function setUI(s) {
+  document.getElementById("inp-date").value = s.date;
+  document.getElementById("inp-account").value = s.account;
+  document.getElementById("inp-color").value = s.color;
+  document.getElementById("inp-rot").value = s.rot;
+  document.getElementById("rot-val").textContent = s.rot + "°";
+  stampX = s.x; stampY = s.y;
+}
+function saveCurrentStamp() {
+  if (currentIdx >= 0 && !isShared()) files[currentIdx].stamp = getUI();
+}
+let pdfDoc = null;       // pdf.js document
+let pageW = 0, pageH = 0, scale = 1;
+let stampX = 80, stampY = 80;   // coin haut-gauche du tampon en points PDF
+
+// ── Templates ─────────────────────────────────────────────────────────────────
+const DEFAULT_TPLS = [
+  { name: "BNP 0860", account: "Compte 0860", color: "#D85A30", rotation: -8 },
+  { name: "BNP 6933", account: "Compte 6933", color: "#D85A30", rotation: -8 },
+  { name: "Virement", account: "Virement", color: "#2765C1", rotation: -8 },
+  { name: "CB", account: "CB", color: "#1E9052", rotation: -8 },
+];
+let templates = JSON.parse(localStorage.getItem("tpl") || "null") || DEFAULT_TPLS;
+
+function saveTpls() { localStorage.setItem("tpl", JSON.stringify(templates)); }
+
+function renderTpls() {
+  const box = document.getElementById("tpl-list");
+  box.innerHTML = "";
+  templates.forEach((t, i) => {
+    const div = document.createElement("div");
+    div.className = "tpl-item";
+    div.innerHTML = `<span>${t.name}</span><span class="tpl-del" title="Supprimer">✕</span>`;
+    div.querySelector("span").onclick = () => applyTpl(t);
+    div.onclick = (e) => { if (!e.target.classList.contains("tpl-del")) applyTpl(t); };
+    div.querySelector(".tpl-del").onclick = (e) => {
+      e.stopPropagation();
+      if (confirm(`Supprimer « ${t.name} » ?`)) { templates.splice(i, 1); saveTpls(); renderTpls(); }
+    };
+    box.appendChild(div);
+  });
+}
+function applyTpl(t) {
+  document.getElementById("inp-account").value = t.account;
+  document.getElementById("inp-color").value = t.color;
+  document.getElementById("inp-rot").value = t.rotation;
+  document.getElementById("rot-val").textContent = t.rotation + "°";
+  drawStamp();
+  saveCurrentStamp();
+}
+function addTemplate() {
+  const name = prompt("Nom du template :");
+  if (!name) return;
+  templates.push({
+    name,
+    account: document.getElementById("inp-account").value,
+    color: document.getElementById("inp-color").value,
+    rotation: +document.getElementById("inp-rot").value,
+  });
+  saveTpls(); renderTpls();
+}
+
+// ── Helpers tampon ────────────────────────────────────────────────────────────
+function stampLines(s) {
+  s = s || getUI();
+  const dateStr = s.date ? s.date.split("-").reverse().join("/") : "";
+  const lines = [["PAYÉ", FS_TITLE], ["Le " + dateStr, FS_LINE]];
+  const acc = s.account.trim();
+  if (acc) lines.push([acc, FS_LINE]);
+  return lines;
+}
+function stampSize(s) {
+  const lines = stampLines(s);
+  const blockH = lines.reduce((s, l) => s + l[1], 0) + GAP * (lines.length - 1);
+  return { W: STAMP_W, H: Math.max(blockH + PAD_V * 2, 56), lines, blockH };
+}
+
+// ── Chargement fichiers ───────────────────────────────────────────────────────
+document.getElementById("file-input").onchange = (e) => addFiles([...e.target.files]);
+const zone = document.getElementById("preview-zone");
+zone.ondragover = (e) => e.preventDefault();
+zone.ondrop = (e) => {
+  e.preventDefault();
+  addFiles([...e.dataTransfer.files].filter(f => f.name.toLowerCase().endsWith(".pdf")));
+};
+
+async function addFiles(list) {
+  for (const f of list) {
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    files.push({ name: f.name, bytes });
+  }
+  renderFileList();
+  if (files.length) selectFile(files.length - 1);
+}
+function renderFileList() {
+  const box = document.getElementById("file-list");
+  box.innerHTML = "";
+  files.forEach((f, i) => {
+    const div = document.createElement("div");
+    div.className = "file-item" + (i === currentIdx ? " active" : "");
+    div.textContent = f.name;
+    div.onclick = () => selectFile(i);
+    box.appendChild(div);
+  });
+  document.getElementById("btn-save").disabled = currentIdx < 0;
+  document.getElementById("btn-save-all").disabled = files.length === 0;
+}
+async function selectFile(i) {
+  saveCurrentStamp();          // mémoriser les réglages du PDF quitté
+  currentIdx = i;
+  if (!isShared()) {
+    if (!files[i].stamp) files[i].stamp = getUI();   // initialiser avec les réglages courants
+    setUI(files[i].stamp);
+  }
+  renderFileList();
+  const task = pdfjsLib.getDocument({ data: files[i].bytes.slice() });
+  pdfDoc = await task.promise;
+  await renderPage();
+}
+
+// ── Rendu PDF ─────────────────────────────────────────────────────────────────
+async function renderPage() {
+  const page = await pdfDoc.getPage(1);
+  const vp1 = page.getViewport({ scale: 1 });
+  pageW = vp1.width; pageH = vp1.height;
+
+  const zoneR = zone.getBoundingClientRect();
+  scale = Math.min((zoneR.width - 24) / pageW, (zoneR.height - 24) / pageH);
+
+  const dpr = window.devicePixelRatio || 1;
+  const vp = page.getViewport({ scale: scale * dpr });
+  const canvas = document.getElementById("pdf-canvas");
+  canvas.width = vp.width; canvas.height = vp.height;
+  canvas.style.width = (vp.width / dpr) + "px";
+  canvas.style.height = (vp.height / dpr) + "px";
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+
+  document.getElementById("drop-hint").style.display = "none";
+  document.getElementById("canvas-wrap").style.display = "block";
+  drawStamp();
+}
+window.onresize = () => { if (pdfDoc) renderPage(); };
+
+// ── Tampon overlay ────────────────────────────────────────────────────────────
+const MARGIN = 50; // px de marge dans le canvas du tampon (rotation)
+function drawStamp() {
+  if (!pdfDoc) return;
+  const { W, H, lines, blockH } = stampSize();
+  const color = document.getElementById("inp-color").value;
+  const rot = +document.getElementById("inp-rot").value;
+  document.getElementById("rot-val").textContent = rot + "°";
+
+  const dpr = window.devicePixelRatio || 1;
+  const Wpx = W * scale, Hpx = H * scale;
+  const cw = Wpx + MARGIN * 2, ch = Hpx + MARGIN * 2;
+
+  const cv = document.getElementById("stamp");
+  cv.width = cw * dpr; cv.height = ch * dpr;
+  cv.style.width = cw + "px"; cv.style.height = ch + "px";
+
+  const ctx = cv.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cw, ch);
+  ctx.translate(MARGIN + Wpx / 2, MARGIN + Hpx / 2);
+  ctx.rotate(rot * Math.PI / 180);
+  ctx.translate(-Wpx / 2, -Hpx / 2);
+
+  ctx.fillStyle = color + "14";
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1.5, 2.5 * scale);
+  ctx.beginPath();
+  ctx.rect(0, 0, Wpx, Hpx);
+  ctx.fill(); ctx.stroke();
+
+  ctx.fillStyle = color;
+  let ty = (Hpx - blockH * scale) / 2;
+  for (let i = 0; i < lines.length; i++) {
+    const [text, fs] = lines[i];
+    ctx.font = `${fs * scale}px Helvetica, Arial, sans-serif`;
+    ty += fs * scale * 0.82;
+    const tw = ctx.measureText(text).width;
+    ctx.fillText(text, (Wpx - tw) / 2, ty);
+    ty += fs * scale * 0.18;
+    if (i < lines.length - 1) ty += GAP * scale;
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  positionStamp();
+}
+function positionStamp() {
+  const cv = document.getElementById("stamp");
+  cv.style.left = (stampX * scale - MARGIN) + "px";
+  cv.style.top  = (stampY * scale - MARGIN) + "px";
+}
+
+// Drag (souris + tactile via pointer events)
+(() => {
+  const cv = document.getElementById("stamp");
+  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  cv.addEventListener("pointerdown", (e) => {
+    dragging = true; cv.setPointerCapture(e.pointerId);
+    sx = e.clientX; sy = e.clientY; ox = stampX; oy = stampY;
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    stampX = ox + (e.clientX - sx) / scale;
+    stampY = oy + (e.clientY - sy) / scale;
+    const { W, H } = stampSize();
+    stampX = Math.max(0, Math.min(stampX, pageW - W));
+    stampY = Math.max(0, Math.min(stampY, pageH - H));
+    positionStamp();
+  });
+  cv.addEventListener("pointerup", () => { dragging = false; saveCurrentStamp(); });
+})();
+
+// Mise à jour live + mémorisation par PDF en mode individuel
+["inp-date", "inp-account", "inp-color", "inp-rot"].forEach(id =>
+  document.getElementById(id).addEventListener("input", () => { drawStamp(); saveCurrentStamp(); }));
+
+// Passage en mode individuel : figer les réglages courants sur le PDF affiché
+document.getElementById("inp-shared").addEventListener("change", () => {
+  if (!isShared() && currentIdx >= 0) files[currentIdx].stamp = getUI();
+});
+
+// ── Export PDF (pdf-lib) ──────────────────────────────────────────────────────
+function hexToRgb(hex) {
+  return PDFLib.rgb(
+    parseInt(hex.slice(1, 3), 16) / 255,
+    parseInt(hex.slice(3, 5), 16) / 255,
+    parseInt(hex.slice(5, 7), 16) / 255
+  );
+}
+
+async function stampPdf(bytes, s) {
+  s = s || getUI();
+  const { W, H, lines, blockH } = stampSize(s);
+  const color = hexToRgb(s.color);
+  const rotDeg = s.rot;
+
+  const doc = await PDFLib.PDFDocument.load(bytes);
+  const helv = await doc.embedFont(PDFLib.StandardFonts.Helvetica);
+  const page = doc.getPage(0);
+  const ph = page.getHeight();
+
+  // pdf-lib travaille en Y-up ; nos coords (s.x, s.y) sont Y-down (haut-gauche)
+  const x = s.x, yTop = s.y;
+  const cx = x + W / 2, cyTop = yTop + H / 2;    // centre Y-down
+  const cy = ph - cyTop;                          // centre Y-up
+  const rad = -rotDeg * Math.PI / 180;            // Y-up : sens inversé
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+
+  // Point (px,py) exprimé dans le repère non-rotaté du tampon (Y-down, origine coin haut-gauche)
+  // → coordonnées page Y-up après rotation autour du centre.
+  function tp(px, py) {
+    const dx = px - W / 2, dy = -(py - H / 2);   // vers repère centré Y-up
+    return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos };
+  }
+
+  // Rectangle (4 segments) + fond très léger via polygone SVG
+  const corners = [tp(0, 0), tp(W, 0), tp(W, H), tp(0, H)];
+  const path = `M ${corners.map(c => `${c.x} ${ph - c.y}`).join(" L ")} Z`;
+  page.drawSvgPath(path, {
+    x: 0, y: ph,
+    borderColor: color, borderWidth: 2.5,
+    color: color, opacity: 0.08, borderOpacity: 1,
+  });
+
+  // Texte centré, ligne par ligne
+  let ty = (H - blockH) / 2;   // Y-down depuis le haut du tampon
+  for (let i = 0; i < lines.length; i++) {
+    const [text, fs] = lines[i];
+    ty += fs * 0.82;
+    const twd = helv.widthOfTextAtSize(text, fs);
+    const p = tp((W - twd) / 2, ty);   // origine baseline gauche
+    page.drawText(text, {
+      x: p.x, y: p.y, size: fs, font: helv, color,
+      rotate: PDFLib.radians(rad),
+    });
+    ty += fs * 0.18;
+    if (i < lines.length - 1) ty += GAP;
+  }
+
+  return await doc.save();
+}
+
+function download(bytes, name) {
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+async function saveCurrent() {
+  if (currentIdx < 0) return;
+  saveCurrentStamp();
+  try {
+    const f = files[currentIdx];
+    const out = await stampPdf(f.bytes, getUI());
+    download(out, f.name.replace(/\.pdf$/i, "") + "_paye.pdf");
+  } catch (e) { alert("Erreur : " + e.message); }
+}
+
+async function saveAll() {
+  saveCurrentStamp();
+  const shared = isShared();
+  const uiStamp = getUI();
+  for (const f of files) {
+    try {
+      // Mode partagé : réglages courants pour tous.
+      // Mode individuel : réglages propres au PDF (ou courants s'il n'a jamais été ouvert).
+      const s = shared ? uiStamp : (f.stamp || uiStamp);
+      const out = await stampPdf(f.bytes, s);
+      download(out, f.name.replace(/\.pdf$/i, "") + "_paye.pdf");
+      await new Promise(r => setTimeout(r, 400)); // laisser le navigateur traiter chaque téléchargement
+    } catch (e) { alert(`Erreur sur ${f.name} : ` + e.message); }
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.getElementById("inp-date").value = new Date().toISOString().slice(0, 10);
+renderTpls();
+</script>
+</body>
+</html>
